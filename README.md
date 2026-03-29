@@ -33,6 +33,17 @@ screener run --top 10
 
 ## CLI Reference
 
+### Global Options
+
+```
+screener [OPTIONS] COMMAND [ARGS]...
+
+Options:
+  -v, --verbose        Increase verbosity (-v for info, -vv for debug)
+```
+
+Use `-v` to see pipeline steps, progress counts, filter results, and cache hits. Use `-vv` to also see per-ticker fetch failures and parse errors.
+
 ### `screener run`
 
 Run the full screening pipeline and output top picks.
@@ -89,6 +100,13 @@ screener run --skip-edgar
 ```
 
 This uses only momentum + quality signals (55%/45% weighting). Much faster since it skips SEC EDGAR API calls.
+
+### See what the pipeline is doing
+
+```bash
+screener -v run --skip-edgar
+screener -vv run          # debug-level: shows per-ticker failures
+```
 
 ### Run a full screen and log results to paper portfolio
 

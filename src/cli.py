@@ -1,12 +1,23 @@
 """Click-based CLI entry point for the small-cap screener."""
 
+import logging
+
 import click
 
 
 @click.group()
-def cli():
+@click.option("-v", "--verbose", count=True, help="Increase verbosity (-v for info, -vv for debug).")
+def cli(verbose):
     """Small-cap stock screener — systematic screening pipeline."""
-    pass
+    level = logging.WARNING
+    if verbose == 1:
+        level = logging.INFO
+    elif verbose >= 2:
+        level = logging.DEBUG
+    logging.basicConfig(
+        level=level,
+        format="%(levelname)s | %(name)s | %(message)s",
+    )
 
 
 @cli.command()
