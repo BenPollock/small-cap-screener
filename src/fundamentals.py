@@ -18,7 +18,6 @@ from datetime import date
 from pathlib import Path
 
 import pandas as pd
-import requests
 import yfinance as yf
 
 logger = logging.getLogger(__name__)
@@ -68,11 +67,8 @@ def enrich_fundamentals(
     completed = len(done_tickers)
     new_since_checkpoint = 0
 
-    from src.universe import _make_pooled_session
-    session = _make_pooled_session(max_workers)
-
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {executor.submit(_fetch_fundamentals, t, session=session): t for t in remaining}
+        futures = {executor.submit(_fetch_fundamentals, t): t for t in remaining}
         for future in as_completed(futures):
             ticker = futures[future]
             completed += 1
@@ -92,8 +88,6 @@ def enrich_fundamentals(
             if new_since_checkpoint >= 20:
                 pd.DataFrame(fundamentals).to_parquet(partial_path, index=False)
                 new_since_checkpoint = 0
-
-    session.close()
     fund_df = pd.DataFrame(fundamentals)
 
     # Final cache + cleanup
@@ -123,7 +117,7 @@ def _clean_numeric(value):
 
 
 def _fetch_fundamentals(
-    ticker: str, max_retries: int = 2, session: requests.Session | None = None,
+    ticker: str, max_retries: int = 2,
 ) -> dict | None:
     """Fetch fundamental data for a single ticker.
 
@@ -133,7 +127,7 @@ def _fetch_fundamentals(
     """
     for attempt in range(max_retries):
         try:
-            t = yf.Ticker(ticker, session=session)
+            t = yf.Ticker(ticker)
             info = t.info
 
             if not info:

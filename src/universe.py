@@ -24,7 +24,6 @@ from pathlib import Path
 
 import pandas as pd
 import requests
-from requests.adapters import HTTPAdapter
 import yfinance as yf
 
 logger = logging.getLogger(__name__)
@@ -40,8 +39,12 @@ VALID_EXCHANGES = {"NYQ", "NMS", "NGM", "NCM", "NYSE", "NASDAQ", "NasdaqGS", "Na
 # EDGAR exchange labels used for pre-filtering (before yfinance enrichment)
 EDGAR_EXCHANGE_LABELS = {"NYSE", "Nasdaq", "NASDAQ"}
 
-# SPAC indicators in company names
-SPAC_KEYWORDS = ["acquisition corp", "blank check", "spac", "merger corp", "acquisition company"]
+# SPAC indicators in company names (used in both _clean_tickers and _apply_filters)
+SPAC_KEYWORDS = [
+    "acquisition corp", "acquisition co", "blank check", "spac",
+    "merger corp", "acquisition company", "capital investment corp",
+    "capital partners corp",
+]
 
 # Sector-based exclusions
 REIT_SECTOR = "Real Estate"
@@ -201,9 +204,25 @@ def _fetch_with_exchange_filter() -> pd.DataFrame | None:
 
 
 def _clean_tickers(df: pd.DataFrame) -> pd.DataFrame:
-    """Remove tickers with special characters, warrants, units, etc."""
+    """Remove tickers with special characters, warrants, units, rights, etc."""
+    before = len(df)
     df = df[~df["ticker"].str.contains(r"[^A-Za-z]", regex=True, na=False)]
     df = df[df["ticker"].str.len().between(1, 5)]
+
+    # Drop SPAC derivatives (warrants/units/rights) before volume prescreen.
+    # These aren't investable equities and waste hundreds of API calls.
+    if "company_name" in df.columns:
+        name_lower = df["company_name"].str.lower()
+        name_mask = name_lower.str.contains(
+            r"warrant|\bunit\b|\brights?\b|acquisition|blank check|\bspac\b|merger corp"
+            r"|capital investment corp|capital partners corp",
+            regex=True, na=False,
+        )
+        df = df[~name_mask].copy()
+
+    dropped = before - len(df)
+    if dropped > 0:
+        logger.info("Cleaned tickers: dropped %d (special chars, SPAC derivatives)", dropped)
     return df
 
 
@@ -220,10 +239,6 @@ def _batch_volume_prescreen(
     passed = []
     batch_size = 100
 
-    # Shared session with connection pooling — reuses sockets to avoid
-    # per-ticker DNS lookups and file descriptor exhaustion on large runs.
-    session = _make_pooled_session(max_workers)
-
     total_batches = (len(tickers) + batch_size - 1) // batch_size
     for i in range(0, len(tickers), batch_size):
         batch = tickers[i : i + batch_size]
@@ -232,7 +247,7 @@ def _batch_volume_prescreen(
         try:
             data = yf.download(
                 batch, period="5d", group_by="ticker", progress=False,
-                threads=max_workers, session=session,
+                threads=max_workers,
             )
             if data.empty:
                 continue
@@ -259,7 +274,6 @@ def _batch_volume_prescreen(
             # On failure, pass all tickers through (don't lose candidates)
             passed.extend(batch)
 
-    session.close()
     return passed
 
 
@@ -276,22 +290,6 @@ def _fallback_russell2000() -> pd.DataFrame:
         logger.error("Fallback also failed: %s", e)
         return pd.DataFrame(columns=["ticker", "company_name", "cik"])
 
-
-def _make_pooled_session(pool_size: int = 4) -> requests.Session:
-    """Create a requests Session with bounded connection pooling.
-
-    Reusing connections avoids per-request DNS lookups, reduces file
-    descriptor usage, and prevents yfinance's internal SQLite TZ cache
-    from being hammered by concurrent openers.
-    """
-    session = requests.Session()
-    adapter = HTTPAdapter(
-        pool_connections=pool_size,
-        pool_maxsize=pool_size,
-    )
-    session.mount("https://", adapter)
-    session.mount("http://", adapter)
-    return session
 
 
 def _enrich_with_yfinance(
@@ -325,10 +323,8 @@ def _enrich_with_yfinance(
     completed = len(done_tickers)
     new_since_checkpoint = 0
 
-    session = _make_pooled_session(max_workers)
-
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {executor.submit(_fetch_ticker_info, t, session=session): t for t in remaining}
+        futures = {executor.submit(_fetch_ticker_info, t): t for t in remaining}
         for future in as_completed(futures):
             completed += 1
             if completed % 50 == 0:
@@ -341,13 +337,6 @@ def _enrich_with_yfinance(
             except Exception as e:
                 logger.debug("Failed to fetch info for %s: %s", futures[future], e)
 
-            # Periodic checkpoint
-            if new_since_checkpoint >= checkpoint_interval:
-                pd.DataFrame(enriched_rows).to_parquet(partial_path, index=False)
-                new_since_checkpoint = 0
-
-    session.close()
-
     # Final write + cleanup
     result = pd.DataFrame(enriched_rows)
     if partial_path.exists():
@@ -355,7 +344,7 @@ def _enrich_with_yfinance(
     return result
 
 
-def _fetch_ticker_info(ticker: str, max_retries: int = 2, session: requests.Session | None = None) -> dict | None:
+def _fetch_ticker_info(ticker: str, max_retries: int = 2) -> dict | None:
     """Fetch key info for a single ticker from yfinance with retry.
 
     Returns dict with: ticker, company_name, market_cap, avg_volume,
@@ -363,7 +352,7 @@ def _fetch_ticker_info(ticker: str, max_retries: int = 2, session: requests.Sess
     """
     for attempt in range(max_retries):
         try:
-            t = yf.Ticker(ticker, session=session)
+            t = yf.Ticker(ticker)
             info = t.info
 
             if not info or info.get("quoteType") is None:
@@ -436,7 +425,7 @@ def _apply_filters(
     logger.info("After SPAC exclusion: %d/%d", len(df), prev)
 
     # REIT exclusion (optional)
-    if not include_reits:
+    if not include_reits and "sector" in df.columns:
         prev = len(df)
         df = df[df["sector"] != REIT_SECTOR].copy()
         logger.info("After REIT exclusion: %d/%d", len(df), prev)

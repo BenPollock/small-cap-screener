@@ -14,7 +14,6 @@ from datetime import date
 from pathlib import Path
 
 import pandas as pd
-import requests
 import yfinance as yf
 
 logger = logging.getLogger(__name__)
@@ -72,12 +71,9 @@ def compute_momentum_scores(
     momentum_data = []
     completed = 0
 
-    from src.universe import _make_pooled_session
-    session = _make_pooled_session(max_workers)
-
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {
-            executor.submit(_compute_single_momentum, t, s, sector_momentum, session=session): t
+            executor.submit(_compute_single_momentum, t, s, sector_momentum): t
             for t, s in ticker_sectors
         }
         for future in as_completed(futures):
@@ -92,8 +88,6 @@ def compute_momentum_scores(
                 momentum_data.append({"ticker": ticker, "roc_6m": None, "roc_1m": None,
                                       "sector_roc_6m": None, "relative_strength": None,
                                       "momentum_score": None})
-
-    session.close()
     mom_df = pd.DataFrame(momentum_data)
 
     # Apply short-term reversal penalty
@@ -141,7 +135,6 @@ def _compute_single_momentum(
     sector: str,
     sector_momentum: dict[str, float],
     max_retries: int = 2,
-    session: requests.Session | None = None,
 ) -> dict:
     """Compute momentum metrics for a single ticker."""
     result = {
@@ -155,7 +148,7 @@ def _compute_single_momentum(
 
     for attempt in range(max_retries):
         try:
-            t = yf.Ticker(ticker, session=session)
+            t = yf.Ticker(ticker)
             hist = t.history(period="1y")
 
             if hist.empty or len(hist) < 21:
