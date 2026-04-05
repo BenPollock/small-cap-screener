@@ -24,6 +24,7 @@ from pathlib import Path
 
 import pandas as pd
 import requests
+from requests.adapters import HTTPAdapter
 import yfinance as yf
 
 logger = logging.getLogger(__name__)
@@ -83,7 +84,7 @@ def get_universe(
     # before expensive individual .info calls
     all_tickers = candidates["ticker"].tolist()
     logger.info("Running batch volume prescreen on %d tickers...", len(all_tickers))
-    volume_passed = set(_batch_volume_prescreen(all_tickers))
+    volume_passed = set(_batch_volume_prescreen(all_tickers, max_workers=max_workers))
     candidates = candidates[candidates["ticker"].isin(volume_passed)].copy()
     logger.info("After volume prescreen: %d tickers", len(candidates))
 
@@ -206,7 +207,9 @@ def _clean_tickers(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def _batch_volume_prescreen(tickers: list[str], min_dollar_volume: float = 500_000) -> list[str]:
+def _batch_volume_prescreen(
+    tickers: list[str], min_dollar_volume: float = 500_000, max_workers: int = 4,
+) -> list[str]:
     """Use yf.download() batch API to quickly screen by dollar volume.
 
     Much faster than individual Ticker().info calls because yf.download()
@@ -215,12 +218,19 @@ def _batch_volume_prescreen(tickers: list[str], min_dollar_volume: float = 500_0
     Returns list of tickers that pass the dollar-volume screen.
     """
     passed = []
-    batch_size = 500  # yf.download() handles large batches well
+    batch_size = 100
+
+    # Shared session with connection pooling — reuses sockets to avoid
+    # per-ticker DNS lookups and file descriptor exhaustion on large runs.
+    session = _make_pooled_session(max_workers)
 
     for i in range(0, len(tickers), batch_size):
         batch = tickers[i : i + batch_size]
         try:
-            data = yf.download(batch, period="5d", group_by="ticker", progress=False, threads=True)
+            data = yf.download(
+                batch, period="5d", group_by="ticker", progress=False,
+                threads=max_workers, session=session,
+            )
             if data.empty:
                 continue
 
@@ -246,6 +256,7 @@ def _batch_volume_prescreen(tickers: list[str], min_dollar_volume: float = 500_0
             # On failure, pass all tickers through (don't lose candidates)
             passed.extend(batch)
 
+    session.close()
     return passed
 
 
@@ -263,16 +274,33 @@ def _fallback_russell2000() -> pd.DataFrame:
         return pd.DataFrame(columns=["ticker", "company_name", "cik"])
 
 
+def _make_pooled_session(pool_size: int = 4) -> requests.Session:
+    """Create a requests Session with bounded connection pooling.
+
+    Reusing connections avoids per-request DNS lookups, reduces file
+    descriptor usage, and prevents yfinance's internal SQLite TZ cache
+    from being hammered by concurrent openers.
+    """
+    session = requests.Session()
+    adapter = HTTPAdapter(
+        pool_connections=pool_size,
+        pool_maxsize=pool_size,
+    )
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
+
+
 def _enrich_with_yfinance(
     candidates: pd.DataFrame,
-    max_workers: int = 8,
+    max_workers: int = 4,
     cache_dir: str = "./data/cache",
     checkpoint_interval: int = 100,
 ) -> pd.DataFrame:
     """Enrich candidate tickers with market cap, volume, sector from yfinance.
 
     Uses ThreadPoolExecutor for concurrent fetching. yfinance allows ~2000 req/hr;
-    8 workers keep throughput well under that limit.
+    4 workers keep throughput well under that limit.
 
     Writes partial results every checkpoint_interval tickers so that a crash
     doesn't lose all progress. On restart, resumes from the partial file.
@@ -294,8 +322,10 @@ def _enrich_with_yfinance(
     completed = len(done_tickers)
     new_since_checkpoint = 0
 
+    session = _make_pooled_session(max_workers)
+
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {executor.submit(_fetch_ticker_info, t): t for t in remaining}
+        futures = {executor.submit(_fetch_ticker_info, t, session=session): t for t in remaining}
         for future in as_completed(futures):
             completed += 1
             if completed % 200 == 0:
@@ -313,6 +343,8 @@ def _enrich_with_yfinance(
                 pd.DataFrame(enriched_rows).to_parquet(partial_path, index=False)
                 new_since_checkpoint = 0
 
+    session.close()
+
     # Final write + cleanup
     result = pd.DataFrame(enriched_rows)
     if partial_path.exists():
@@ -320,7 +352,7 @@ def _enrich_with_yfinance(
     return result
 
 
-def _fetch_ticker_info(ticker: str, max_retries: int = 2) -> dict | None:
+def _fetch_ticker_info(ticker: str, max_retries: int = 2, session: requests.Session | None = None) -> dict | None:
     """Fetch key info for a single ticker from yfinance with retry.
 
     Returns dict with: ticker, company_name, market_cap, avg_volume,
@@ -328,7 +360,7 @@ def _fetch_ticker_info(ticker: str, max_retries: int = 2) -> dict | None:
     """
     for attempt in range(max_retries):
         try:
-            t = yf.Ticker(ticker)
+            t = yf.Ticker(ticker, session=session)
             info = t.info
 
             if not info or info.get("quoteType") is None:

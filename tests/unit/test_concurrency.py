@@ -255,7 +255,7 @@ class TestWorkersCliFlag:
         result = runner.invoke(cli, ["run"])
 
         assert result.exit_code == 0
-        assert mock_pipeline.call_args.kwargs["max_workers"] == 8
+        assert mock_pipeline.call_args.kwargs["max_workers"] == 4
 
     @patch("src.pipeline.run_pipeline")
     def test_workers_flag_custom(self, mock_pipeline):

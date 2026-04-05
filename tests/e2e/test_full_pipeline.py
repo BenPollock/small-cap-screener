@@ -61,7 +61,7 @@ MOCK_TICKERS = {
 PRICE_HISTORY = _make_price_history()
 
 
-def _mock_yf_ticker(symbol):
+def _mock_yf_ticker(symbol, **kwargs):
     """Create a mock yfinance Ticker that returns proper info and history."""
     mock = MagicMock()
     info = MOCK_TICKERS.get(symbol, {"quoteType": None})

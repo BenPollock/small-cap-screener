@@ -32,7 +32,7 @@ class TestScreenerRun:
             min_mcap=200,
             max_mcap=2000,
             cache_dir="./data/cache",
-            max_workers=8,
+            max_workers=4,
         )
 
     @patch("src.pipeline.run_pipeline")
@@ -57,7 +57,7 @@ class TestScreenerRun:
             min_mcap=300,
             max_mcap=1500,
             cache_dir="./data/cache",
-            max_workers=8,
+            max_workers=4,
         )
 
     def test_invalid_output_format(self, runner):
