@@ -224,8 +224,11 @@ def _batch_volume_prescreen(
     # per-ticker DNS lookups and file descriptor exhaustion on large runs.
     session = _make_pooled_session(max_workers)
 
+    total_batches = (len(tickers) + batch_size - 1) // batch_size
     for i in range(0, len(tickers), batch_size):
         batch = tickers[i : i + batch_size]
+        batch_num = i // batch_size + 1
+        logger.info("Volume prescreen batch %d/%d (%d tickers)", batch_num, total_batches, len(batch))
         try:
             data = yf.download(
                 batch, period="5d", group_by="ticker", progress=False,
@@ -328,7 +331,7 @@ def _enrich_with_yfinance(
         futures = {executor.submit(_fetch_ticker_info, t, session=session): t for t in remaining}
         for future in as_completed(futures):
             completed += 1
-            if completed % 200 == 0:
+            if completed % 50 == 0:
                 logger.info("Universe enrichment progress: %d/%d", completed, total)
             try:
                 info = future.result()
