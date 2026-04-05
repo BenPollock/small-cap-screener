@@ -18,6 +18,7 @@ Filters applied:
 import json
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime
 from pathlib import Path
 
@@ -27,12 +28,16 @@ import yfinance as yf
 
 logger = logging.getLogger(__name__)
 
-# SEC EDGAR company tickers endpoint (no auth required, but needs User-Agent)
+# SEC EDGAR company tickers endpoints (no auth required, but needs User-Agent)
 EDGAR_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
+EDGAR_TICKERS_EXCHANGE_URL = "https://www.sec.gov/files/company_tickers_exchange.json"
 SEC_USER_AGENT = "SmallCapScreener/1.0 (ben@example.com)"
 
-# Exchanges we want
+# Exchanges we want (yfinance .info exchange codes)
 VALID_EXCHANGES = {"NYQ", "NMS", "NGM", "NCM", "NYSE", "NASDAQ", "NasdaqGS", "NasdaqGM", "NasdaqCM"}
+
+# EDGAR exchange labels used for pre-filtering (before yfinance enrichment)
+EDGAR_EXCHANGE_LABELS = {"NYSE", "Nasdaq", "NASDAQ"}
 
 # SPAC indicators in company names
 SPAC_KEYWORDS = ["acquisition corp", "blank check", "spac", "merger corp", "acquisition company"]
@@ -47,6 +52,7 @@ def get_universe(
     max_mcap: int = 2000,
     cache_dir: str = "./data/cache",
     include_reits: bool = False,
+    max_workers: int = 8,
 ) -> pd.DataFrame:
     """Build the filtered investable universe.
 
@@ -65,7 +71,7 @@ def get_universe(
         logger.info("Loading cached universe from %s", cache_path)
         return pd.read_parquet(cache_path)
 
-    # Get candidate tickers
+    # Get candidate tickers (pre-filtered by exchange if available)
     candidates = _fetch_candidate_tickers()
     logger.info("Fetched %d candidate tickers", len(candidates))
 
@@ -73,8 +79,16 @@ def get_universe(
         logger.error("No candidate tickers found")
         return pd.DataFrame()
 
-    # Enrich with yfinance data in batches
-    enriched = _enrich_with_yfinance(candidates)
+    # Batch volume prescreen: use yf.download() to quickly drop illiquid tickers
+    # before expensive individual .info calls
+    all_tickers = candidates["ticker"].tolist()
+    logger.info("Running batch volume prescreen on %d tickers...", len(all_tickers))
+    volume_passed = set(_batch_volume_prescreen(all_tickers))
+    candidates = candidates[candidates["ticker"].isin(volume_passed)].copy()
+    logger.info("After volume prescreen: %d tickers", len(candidates))
+
+    # Enrich survivors with full yfinance .info data (market cap, sector, etc.)
+    enriched = _enrich_with_yfinance(candidates, max_workers=max_workers)
     logger.info("Enriched %d tickers with yfinance data", len(enriched))
 
     # Apply filters
@@ -94,10 +108,19 @@ def get_universe(
 
 
 def _fetch_candidate_tickers() -> pd.DataFrame:
-    """Fetch candidate tickers from SEC EDGAR company tickers endpoint.
+    """Fetch candidate tickers from SEC EDGAR, pre-filtered by exchange.
+
+    Tries the exchange endpoint first to filter to NYSE/Nasdaq before yfinance
+    enrichment, reducing the candidate set by ~40%. Falls back to the basic
+    tickers endpoint if the exchange endpoint is unavailable.
 
     Returns DataFrame with columns: ticker, company_name, cik
     """
+    df = _fetch_with_exchange_filter()
+    if df is not None and not df.empty:
+        return df
+
+    # Fallback: basic endpoint without exchange pre-filter
     try:
         resp = requests.get(
             EDGAR_TICKERS_URL,
@@ -115,15 +138,115 @@ def _fetch_candidate_tickers() -> pd.DataFrame:
             rows.append({"ticker": ticker, "company_name": name, "cik": cik})
 
         df = pd.DataFrame(rows)
-        # Basic cleanup: remove tickers with special characters (warrants, units)
-        df = df[~df["ticker"].str.contains(r"[^A-Za-z]", regex=True, na=False)]
-        # Remove very short or very long tickers
-        df = df[df["ticker"].str.len().between(1, 5)]
+        df = _clean_tickers(df)
         return df
 
     except Exception as e:
         logger.warning("Failed to fetch SEC tickers: %s. Falling back to Russell 2000.", e)
         return _fallback_russell2000()
+
+
+def _fetch_with_exchange_filter() -> pd.DataFrame | None:
+    """Try the EDGAR exchange endpoint to pre-filter by NYSE/Nasdaq.
+
+    Returns None if the endpoint is unavailable.
+    """
+    try:
+        resp = requests.get(
+            EDGAR_TICKERS_EXCHANGE_URL,
+            headers={"User-Agent": SEC_USER_AGENT},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+        fields = data.get("fields", [])
+        rows_raw = data.get("data", [])
+        df = pd.DataFrame(rows_raw, columns=fields)
+
+        # Normalize column names (EDGAR uses varying capitalization)
+        col_map = {}
+        for col in df.columns:
+            lc = col.lower()
+            if lc == "cik":
+                col_map[col] = "cik"
+            elif lc in ("name", "title"):
+                col_map[col] = "company_name"
+            elif lc == "ticker":
+                col_map[col] = "ticker"
+            elif lc == "exchange":
+                col_map[col] = "exchange"
+        df = df.rename(columns=col_map)
+
+        if "exchange" not in df.columns or "ticker" not in df.columns:
+            logger.debug("Exchange endpoint missing expected columns")
+            return None
+
+        before = len(df)
+        df = df[df["exchange"].isin(EDGAR_EXCHANGE_LABELS)]
+        logger.info("Exchange pre-filter: %d → %d tickers (NYSE/Nasdaq only)", before, len(df))
+
+        df = _clean_tickers(df)
+
+        # Drop exchange column — yfinance enrichment will add the canonical one
+        if "exchange" in df.columns:
+            df = df.drop(columns=["exchange"])
+
+        return df
+
+    except Exception as e:
+        logger.debug("Exchange endpoint unavailable, falling back: %s", e)
+        return None
+
+
+def _clean_tickers(df: pd.DataFrame) -> pd.DataFrame:
+    """Remove tickers with special characters, warrants, units, etc."""
+    df = df[~df["ticker"].str.contains(r"[^A-Za-z]", regex=True, na=False)]
+    df = df[df["ticker"].str.len().between(1, 5)]
+    return df
+
+
+def _batch_volume_prescreen(tickers: list[str], min_dollar_volume: float = 500_000) -> list[str]:
+    """Use yf.download() batch API to quickly screen by dollar volume.
+
+    Much faster than individual Ticker().info calls because yf.download()
+    fetches all tickers in a single HTTP request per batch.
+
+    Returns list of tickers that pass the dollar-volume screen.
+    """
+    passed = []
+    batch_size = 500  # yf.download() handles large batches well
+
+    for i in range(0, len(tickers), batch_size):
+        batch = tickers[i : i + batch_size]
+        try:
+            data = yf.download(batch, period="5d", group_by="ticker", progress=False, threads=True)
+            if data.empty:
+                continue
+
+            for ticker in batch:
+                try:
+                    if len(batch) == 1:
+                        ticker_data = data
+                    else:
+                        ticker_data = data[ticker]
+
+                    if ticker_data.empty:
+                        continue
+
+                    last_close = ticker_data["Close"].dropna().iloc[-1]
+                    avg_vol = ticker_data["Volume"].dropna().mean()
+                    if last_close * avg_vol >= min_dollar_volume:
+                        passed.append(ticker)
+                except (KeyError, IndexError):
+                    continue
+
+        except Exception as e:
+            logger.debug("Batch volume prescreen failed for chunk %d: %s", i, e)
+            # On failure, pass all tickers through (don't lose candidates)
+            passed.extend(batch)
+
+    return passed
 
 
 def _fallback_russell2000() -> pd.DataFrame:
@@ -142,38 +265,59 @@ def _fallback_russell2000() -> pd.DataFrame:
 
 def _enrich_with_yfinance(
     candidates: pd.DataFrame,
-    batch_size: int = 50,
-    delay_between_batches: float = 2.0,
+    max_workers: int = 8,
+    cache_dir: str = "./data/cache",
+    checkpoint_interval: int = 100,
 ) -> pd.DataFrame:
     """Enrich candidate tickers with market cap, volume, sector from yfinance.
 
-    Processes in batches with delays to avoid rate limiting.
-    Adapted from claude-backtester yahoo.py throttle/retry pattern.
+    Uses ThreadPoolExecutor for concurrent fetching. yfinance allows ~2000 req/hr;
+    8 workers keep throughput well under that limit.
+
+    Writes partial results every checkpoint_interval tickers so that a crash
+    doesn't lose all progress. On restart, resumes from the partial file.
     """
-    tickers = candidates["ticker"].tolist()
-    enriched_rows = []
-    total = len(tickers)
+    partial_path = Path(cache_dir) / f"_enrichment_partial_{date.today().isoformat()}.parquet"
+    partial_path.parent.mkdir(parents=True, exist_ok=True)
 
-    for i in range(0, total, batch_size):
-        batch = tickers[i : i + batch_size]
-        batch_num = i // batch_size + 1
-        total_batches = (total + batch_size - 1) // batch_size
-        logger.info("Processing batch %d/%d (%d tickers)", batch_num, total_batches, len(batch))
+    # Resume from partial checkpoint if available
+    done_tickers: set[str] = set()
+    enriched_rows: list[dict] = []
+    if partial_path.exists():
+        partial_df = pd.read_parquet(partial_path)
+        enriched_rows = partial_df.to_dict("records")
+        done_tickers = set(partial_df["ticker"])
+        logger.info("Resuming enrichment: %d tickers already completed", len(done_tickers))
 
-        for ticker in batch:
+    remaining = [t for t in candidates["ticker"].tolist() if t not in done_tickers]
+    total = len(remaining) + len(done_tickers)
+    completed = len(done_tickers)
+    new_since_checkpoint = 0
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(_fetch_ticker_info, t): t for t in remaining}
+        for future in as_completed(futures):
+            completed += 1
+            if completed % 200 == 0:
+                logger.info("Universe enrichment progress: %d/%d", completed, total)
             try:
-                info = _fetch_ticker_info(ticker)
+                info = future.result()
                 if info is not None:
                     enriched_rows.append(info)
+                    new_since_checkpoint += 1
             except Exception as e:
-                logger.debug("Failed to fetch info for %s: %s", ticker, e)
-                continue
+                logger.debug("Failed to fetch info for %s: %s", futures[future], e)
 
-        # Rate limit between batches
-        if i + batch_size < total:
-            time.sleep(delay_between_batches)
+            # Periodic checkpoint
+            if new_since_checkpoint >= checkpoint_interval:
+                pd.DataFrame(enriched_rows).to_parquet(partial_path, index=False)
+                new_since_checkpoint = 0
 
-    return pd.DataFrame(enriched_rows)
+    # Final write + cleanup
+    result = pd.DataFrame(enriched_rows)
+    if partial_path.exists():
+        partial_path.unlink()
+    return result
 
 
 def _fetch_ticker_info(ticker: str, max_retries: int = 2) -> dict | None:

@@ -1,7 +1,7 @@
 # tests/ Module Context
 
 ## Responsibility
-87 tests covering all modules — unit tests for each src/ and edgar/ module, E2E tests for pipeline and CLI.
+Tests covering all modules — unit tests for each src/ and edgar/ module, E2E tests for pipeline and CLI.
 
 ## Test Structure
 ```
@@ -11,7 +11,7 @@ tests/
 │   ├── sample_yfinance_info.json
 │   └── sample_form4.xml
 ├── unit/
-│   ├── test_universe.py      # SEC ticker fetching, all filter logic, cache
+│   ├── test_universe.py      # SEC ticker fetching, all filter logic, cache, exchange pre-filter, batch prescreen, progressive caching
 │   ├── test_fundamentals.py  # yfinance fetching, quality filters, edge cases
 │   ├── test_momentum.py      # ROC calculations, reversal penalty, cache
 │   ├── test_insider.py       # Form 4 parsing, scoring, executive weighting
@@ -29,6 +29,8 @@ tests/
 - **Real logic runs**: All DataFrame transforms, scoring, filtering, ranking execute with real data
 - **Use `@patch("src.module.yf.Ticker")`** to mock yfinance at the import site
 - **Use `@responses.activate`** for raw HTTP mocking (SEC EDGAR ticker endpoint)
+- **Mock `_batch_volume_prescreen`** in E2E/pipeline tests to avoid real `yf.download()` calls
+- **Rate limiter tests** use real threading to verify thread safety
 
 ## Fixtures (conftest.py)
 - `sample_universe` — 5 tickers with market cap, volume, sector data

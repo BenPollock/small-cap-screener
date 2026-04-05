@@ -23,7 +23,7 @@ screener validate                     # ETF factor validation
 ## Run Tests
 
 ```bash
-pytest                    # All tests (87 total)
+pytest                    # All tests
 pytest tests/unit/        # Unit tests only
 pytest tests/e2e/         # E2E tests only
 pytest -k "test_momentum" # Pattern match
@@ -31,22 +31,24 @@ pytest -k "test_momentum" # Pattern match
 
 ## Architecture
 
-Data flows through the pipeline as: **universe → fundamentals → momentum → insider → scorer → output**
+Data flows through the pipeline as: **universe → fundamentals ∥ momentum → insider → scorer → output**
+
+Fundamentals and momentum run concurrently (parallel pipeline stages). All I/O-bound stages use `ThreadPoolExecutor` (configurable via `--workers`). EDGAR uses a thread-safe token-bucket rate limiter. Long-running stages write progressive checkpoints for crash resilience.
 
 | Module | Responsibility |
 |--------|---------------|
-| `src/universe.py` | Fetch US equities from SEC EDGAR tickers endpoint, filter by market cap ($200M-$2B), volume (>$500K/day), exchange (NYSE/NASDAQ), exclude SPACs/ADRs/REITs |
+| `src/universe.py` | Fetch US equities from SEC EDGAR tickers endpoint, exchange pre-filter, batch volume prescreen via `yf.download()`, concurrent `yf.Ticker.info` enrichment, filter by market cap ($200M-$2B), volume (>$500K/day), exchange (NYSE/NASDAQ), exclude SPACs/ADRs/REITs |
 | `src/fundamentals.py` | Fetch revenue, margins, D/E, FCF via yfinance `.info`. Apply quality filters |
 | `src/momentum.py` | 6-month and 1-month ROC, relative strength vs sector ETFs, reversal penalty |
-| `src/insider.py` | Orchestrates EDGAR Form 4 insider buying score computation |
+| `src/insider.py` | Orchestrates EDGAR Form 4 insider buying score computation (concurrent with shared rate limiter) |
 | `edgar/fetcher.py` | EDGAR API client — Form 4 fetching via edgartools. Adapted from claude-backtester |
 | `edgar/insider_parser.py` | Form 4 parsing: purchase filtering, dollar value scoring, CEO/CFO 2x weighting |
-| `edgar/rate_limiter.py` | SEC rate limiter (10 req/sec) + retry with exponential backoff |
+| `edgar/rate_limiter.py` | Thread-safe token-bucket rate limiter (10 req/sec) + retry with exponential backoff |
 | `src/scorer.py` | Percentile rank normalization + weighted composite scoring |
 | `src/output.py` | Rich terminal table, CSV, or markdown output. Auto-saves JSON |
 | `src/portfolio.py` | Paper portfolio: log picks, track returns vs SPY |
 | `src/validate.py` | ETF factor validation |
-| `src/pipeline.py` | Orchestrates the full flow |
+| `src/pipeline.py` | Orchestrates the full flow; runs fundamentals ∥ momentum concurrently |
 | `src/cli.py` | Click CLI entry point |
 
 ## Key Design Decisions
@@ -54,7 +56,9 @@ Data flows through the pipeline as: **universe → fundamentals → momentum →
 - **SEC EDGAR company tickers** as universe source (comprehensive, free, no auth)
 - **edgartools library** for EDGAR access — adapted from claude-backtester
 - **yfinance first**, adapter pattern for future FMP/EODHD swap
-- **Cache everything** to `data/cache/` as parquet/JSON
+- **Cache everything** to `data/cache/` as parquet/JSON with progressive checkpoints for crash resilience
+- **ThreadPoolExecutor** for all I/O-bound stages, configurable via `--workers` flag (default 8)
+- **Thread-safe token-bucket rate limiter** for SEC EDGAR concurrent fetches
 - **Jegadeesh-Titman momentum** with short-term reversal filter
 - **Quality filters auto-relax** if < 100 tickers survive
 
@@ -62,4 +66,4 @@ Data flows through the pipeline as: **universe → fundamentals → momentum →
 
 - **yfinance**: Free, no auth. Rate limits ~2000 req/hour. Retry + skip on failure.
 - **SEC EDGAR**: 10 req/sec max, User-Agent required. Retry on 403/429.
-- **Caching**: All data cached by date in `data/cache/`.
+- **Caching**: All data cached by date in `data/cache/`. Progressive checkpoints (`_*_partial_*`) enable crash recovery.

@@ -13,6 +13,7 @@ Only considers PURCHASES (transaction code "P"). Ignores sales, grants, exercise
 
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -28,6 +29,7 @@ def compute_insider_scores(
     df: pd.DataFrame,
     cache_dir: str = "./data/cache",
     lookback_days: int = 90,
+    max_workers: int = 10,
 ) -> pd.DataFrame:
     """Compute insider buying scores for all tickers.
 
@@ -50,15 +52,25 @@ def compute_insider_scores(
     client = EdgarClient()
     cutoff_date = date.today() - timedelta(days=lookback_days)
 
-    insider_data = []
-    total = len(df)
+    partial_path = Path(cache_dir) / f"_insider_partial_{date.today().isoformat()}.json"
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
 
-    for idx, row in df.iterrows():
-        ticker = row["ticker"]
+    # Resume from partial checkpoint if available
+    done_tickers: set[str] = set()
+    insider_data: list[dict] = []
+    if partial_path.exists():
+        partial_df = pd.read_json(partial_path)
+        insider_data = partial_df.to_dict("records")
+        done_tickers = set(partial_df["ticker"])
+        logger.info("Resuming insider data: %d tickers already completed", len(done_tickers))
 
-        if idx > 0 and idx % 20 == 0:
-            logger.info("Insider data progress: %d/%d", idx, total)
+    remaining = [t for t in df["ticker"].tolist() if t not in done_tickers]
+    total = len(remaining) + len(done_tickers)
+    completed = len(done_tickers)
+    new_since_checkpoint = 0
+    _checkpoint_lock = __import__("threading").Lock()
 
+    def _fetch_one(ticker: str) -> dict:
         try:
             transactions = client.fetch_form4(ticker)
             if transactions is not None and not transactions.empty:
@@ -68,13 +80,31 @@ def compute_insider_scores(
         except Exception as e:
             logger.debug("Failed insider data for %s: %s", ticker, e)
             score = 0.0
+        return {"ticker": ticker, "insider_score": score}
 
-        insider_data.append({"ticker": ticker, "insider_score": score})
+    # 10 workers matches SEC's 10 req/s limit; the shared RateLimiter
+    # in EdgarClient serializes actual HTTP calls to stay compliant.
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(_fetch_one, t): t for t in remaining}
+        for future in as_completed(futures):
+            result = future.result()
+            completed += 1
+            if completed % 20 == 0:
+                logger.info("Insider data progress: %d/%d", completed, total)
+            insider_data.append(result)
+            new_since_checkpoint += 1
+
+            # Periodic checkpoint
+            if new_since_checkpoint >= 20:
+                with _checkpoint_lock:
+                    pd.DataFrame(insider_data).to_json(partial_path, orient="records", indent=2)
+                    new_since_checkpoint = 0
 
     insider_df = pd.DataFrame(insider_data)
 
-    # Cache
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    # Final cache + cleanup
     insider_df.to_json(cache_path, orient="records", indent=2)
+    if partial_path.exists():
+        partial_path.unlink()
 
     return df.merge(insider_df, on="ticker", how="left")

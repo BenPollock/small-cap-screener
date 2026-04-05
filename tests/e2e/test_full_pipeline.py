@@ -77,9 +77,10 @@ class TestFullPipeline:
     @patch("src.momentum.yf.Ticker", side_effect=_mock_yf_ticker)
     @patch("src.fundamentals.yf.Ticker", side_effect=_mock_yf_ticker)
     @patch("src.universe.yf.Ticker", side_effect=_mock_yf_ticker)
+    @patch("src.universe._batch_volume_prescreen", side_effect=lambda tickers, **kw: tickers)
     @patch("src.universe._fetch_candidate_tickers")
     def test_pipeline_produces_ranked_output(
-        self, mock_candidates, mock_univ_yf, mock_fund_yf, mock_mom_yf, mock_edgar, tmp_path
+        self, mock_candidates, mock_prescreen, mock_univ_yf, mock_fund_yf, mock_mom_yf, mock_edgar, tmp_path
     ):
         """Full pipeline should produce a ranked DataFrame with expected columns."""
         mock_candidates.return_value = pd.DataFrame({
@@ -114,9 +115,10 @@ class TestFullPipeline:
     @patch("src.momentum.yf.Ticker", side_effect=_mock_yf_ticker)
     @patch("src.fundamentals.yf.Ticker", side_effect=_mock_yf_ticker)
     @patch("src.universe.yf.Ticker", side_effect=_mock_yf_ticker)
+    @patch("src.universe._batch_volume_prescreen", side_effect=lambda tickers, **kw: tickers)
     @patch("src.universe._fetch_candidate_tickers")
     def test_pipeline_respects_top_n(
-        self, mock_candidates, mock_univ_yf, mock_fund_yf, mock_mom_yf, mock_edgar, tmp_path
+        self, mock_candidates, mock_prescreen, mock_univ_yf, mock_fund_yf, mock_mom_yf, mock_edgar, tmp_path
     ):
         """Pipeline --top flag should limit result count."""
         mock_candidates.return_value = pd.DataFrame({
@@ -144,9 +146,10 @@ class TestFullPipeline:
     @patch("src.momentum.yf.Ticker", side_effect=_mock_yf_ticker)
     @patch("src.fundamentals.yf.Ticker", side_effect=_mock_yf_ticker)
     @patch("src.universe.yf.Ticker", side_effect=_mock_yf_ticker)
+    @patch("src.universe._batch_volume_prescreen", side_effect=lambda tickers, **kw: tickers)
     @patch("src.universe._fetch_candidate_tickers")
     def test_pipeline_saves_screen_json(
-        self, mock_candidates, mock_univ_yf, mock_fund_yf, mock_mom_yf, mock_edgar, tmp_path
+        self, mock_candidates, mock_prescreen, mock_univ_yf, mock_fund_yf, mock_mom_yf, mock_edgar, tmp_path
     ):
         """Pipeline should save screen results to JSON."""
         mock_candidates.return_value = pd.DataFrame({

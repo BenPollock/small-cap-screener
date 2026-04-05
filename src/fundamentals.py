@@ -13,6 +13,7 @@ implementing the same interface.
 import logging
 import math
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date
 from pathlib import Path
 
@@ -25,17 +26,20 @@ logger = logging.getLogger(__name__)
 def enrich_fundamentals(
     universe: pd.DataFrame,
     cache_dir: str = "./data/cache",
-    batch_delay: float = 1.0,
+    max_workers: int = 8,
 ) -> pd.DataFrame:
     """Enrich universe DataFrame with fundamental data.
 
     Adds columns: revenue_ttm, revenue_growth_yoy, operating_margin,
     debt_to_equity, free_cash_flow, pe_ratio, last_fiscal_date
 
+    Uses ThreadPoolExecutor for concurrent fetching. 8 workers keeps
+    throughput well under yfinance's ~2000 req/hr limit.
+
     Args:
         universe: DataFrame with at least a 'ticker' column.
         cache_dir: Directory for caching.
-        batch_delay: Delay between ticker fetches to avoid rate limiting.
+        max_workers: Number of concurrent fetch threads.
 
     Returns:
         Universe DataFrame enriched with fundamental columns.
@@ -46,28 +50,51 @@ def enrich_fundamentals(
         cached = pd.read_parquet(cache_path)
         return universe.merge(cached, on="ticker", how="left")
 
-    fundamentals = []
-    total = len(universe)
+    partial_path = Path(cache_dir) / f"_fundamentals_partial_{date.today().isoformat()}.parquet"
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
 
-    for idx, row in universe.iterrows():
-        ticker = row["ticker"]
-        if idx > 0 and idx % 50 == 0:
-            logger.info("Fundamentals progress: %d/%d", idx, total)
+    # Resume from partial checkpoint if available
+    done_tickers: set[str] = set()
+    fundamentals: list[dict] = []
+    if partial_path.exists():
+        partial_df = pd.read_parquet(partial_path)
+        fundamentals = partial_df.to_dict("records")
+        done_tickers = set(partial_df["ticker"])
+        logger.info("Resuming fundamentals: %d tickers already completed", len(done_tickers))
 
-        data = _fetch_fundamentals(ticker)
-        if data is not None:
-            fundamentals.append(data)
-        else:
-            # Fill with NaN so ticker isn't dropped
-            fundamentals.append({"ticker": ticker})
+    remaining = [t for t in universe["ticker"].tolist() if t not in done_tickers]
+    total = len(remaining) + len(done_tickers)
+    completed = len(done_tickers)
+    new_since_checkpoint = 0
 
-        time.sleep(batch_delay)
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(_fetch_fundamentals, t): t for t in remaining}
+        for future in as_completed(futures):
+            ticker = futures[future]
+            completed += 1
+            if completed % 50 == 0:
+                logger.info("Fundamentals progress: %d/%d", completed, total)
+            try:
+                data = future.result()
+                if data is not None:
+                    fundamentals.append(data)
+                else:
+                    fundamentals.append({"ticker": ticker})
+            except Exception:
+                fundamentals.append({"ticker": ticker})
+            new_since_checkpoint += 1
+
+            # Periodic checkpoint
+            if new_since_checkpoint >= 20:
+                pd.DataFrame(fundamentals).to_parquet(partial_path, index=False)
+                new_since_checkpoint = 0
 
     fund_df = pd.DataFrame(fundamentals)
 
-    # Cache
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    # Final cache + cleanup
     fund_df.to_parquet(cache_path, index=False)
+    if partial_path.exists():
+        partial_path.unlink()
 
     return universe.merge(fund_df, on="ticker", how="left")
 

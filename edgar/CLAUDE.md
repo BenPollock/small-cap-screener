@@ -16,12 +16,12 @@ SEC EDGAR API client for Form 4 insider trading data. Adapted from claude-backte
 - `score_insider_buying(transactions, cutoff_date) → float` — Scores based on: unique insiders (0-40pts, log scale), dollar value (0-40pts, log scale), executive weighting (0-20pts, CEO/CFO 2x)
 
 ### rate_limiter.py
-- `RateLimiter(max_per_second)` — Token bucket rate limiter, default 10 req/sec
+- `RateLimiter(max_per_second)` — Thread-safe token-bucket rate limiter using `threading.Lock`, default 10 req/sec. Shared across concurrent workers in `insider.py`.
 - `edgar_retry(max_retries, initial_backoff)` — Decorator for exponential backoff on 403/429/rate limit errors
 - `is_rate_limit_error(exc)` — Checks exception for rate limit indicators
 
 ## EDGAR Specifics
-- **Rate limit**: 10 req/sec enforced by RateLimiter + edgartools internal limiting
+- **Rate limit**: 10 req/sec enforced by thread-safe RateLimiter (shared across concurrent workers) + edgartools internal limiting
 - **User-Agent**: Required by SEC. Set via `set_identity()` in edgartools
 - **Retry**: Exponential backoff 10s→20s→40s on 403/429. Max 3 retries.
 - **Form 4 transaction codes**: P = purchase, S = sale. We only score purchases.
