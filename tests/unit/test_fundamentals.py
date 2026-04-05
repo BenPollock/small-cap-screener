@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 import pandas as pd
 import pytest
 
-from src.fundamentals import _fetch_fundamentals, apply_quality_filters, enrich_fundamentals
+from src.fundamentals import _clean_numeric, _fetch_fundamentals, apply_quality_filters, enrich_fundamentals
 
 
 class TestFetchFundamentals:
@@ -56,6 +56,105 @@ class TestFetchFundamentals:
 
         result = _fetch_fundamentals("ERR")
         assert result is None
+
+
+class TestCleanNumeric:
+    """Tests for _clean_numeric helper."""
+
+    def test_returns_valid_numbers(self):
+        assert _clean_numeric(15.0) == 15.0
+        assert _clean_numeric(0) == 0
+        assert _clean_numeric(-3.5) == -3.5
+
+    def test_returns_none_for_none(self):
+        assert _clean_numeric(None) is None
+
+    def test_returns_none_for_string_infinity(self):
+        """The actual bug: yfinance returns 'Infinity' as a string."""
+        assert _clean_numeric("Infinity") is None
+
+    def test_returns_none_for_other_strings(self):
+        assert _clean_numeric("N/A") is None
+        assert _clean_numeric("NaN") is None
+
+    def test_returns_none_for_float_inf(self):
+        assert _clean_numeric(float("inf")) is None
+        assert _clean_numeric(float("-inf")) is None
+
+    def test_returns_none_for_float_nan(self):
+        assert _clean_numeric(float("nan")) is None
+
+
+class TestFetchFundamentalsInfinityHandling:
+    """Tests that _fetch_fundamentals sanitizes non-numeric values from yfinance."""
+
+    @patch("src.fundamentals.yf.Ticker")
+    def test_infinity_pe_ratio_becomes_none(self, mock_ticker_cls):
+        """PE ratio of 'Infinity' from yfinance should become None."""
+        mock_ticker = MagicMock()
+        mock_ticker.info = {
+            "totalRevenue": 100_000_000,
+            "revenueGrowth": 0.15,
+            "operatingMargins": 0.12,
+            "debtToEquity": 50.0,
+            "freeCashflow": 10_000_000,
+            "trailingPE": "Infinity",
+            "operatingCashflow": 15_000_000,
+            "mostRecentQuarter": None,
+        }
+        mock_ticker_cls.return_value = mock_ticker
+
+        result = _fetch_fundamentals("ACME")
+        assert result["pe_ratio"] is None
+        # Other numeric fields should be fine
+        assert result["revenue_ttm"] == 100_000_000
+
+    @patch("src.fundamentals.yf.Ticker")
+    def test_inf_float_pe_ratio_becomes_none(self, mock_ticker_cls):
+        """PE ratio of float('inf') from yfinance should become None."""
+        mock_ticker = MagicMock()
+        mock_ticker.info = {
+            "totalRevenue": 100_000_000,
+            "revenueGrowth": 0.15,
+            "operatingMargins": 0.12,
+            "debtToEquity": 50.0,
+            "freeCashflow": 10_000_000,
+            "trailingPE": float("inf"),
+            "operatingCashflow": 15_000_000,
+            "mostRecentQuarter": None,
+        }
+        mock_ticker_cls.return_value = mock_ticker
+
+        result = _fetch_fundamentals("ACME")
+        assert result["pe_ratio"] is None
+
+    @patch("src.fundamentals.yf.Ticker")
+    def test_parquet_serialization_with_mixed_pe_values(self, mock_ticker_cls):
+        """DataFrame with cleaned infinity values should serialize to parquet without error."""
+        mock_ticker = MagicMock()
+
+        # First call returns normal PE, second returns 'Infinity'
+        def make_info(pe):
+            return {
+                "totalRevenue": 100_000_000,
+                "revenueGrowth": 0.15,
+                "operatingMargins": 0.12,
+                "debtToEquity": 50.0,
+                "freeCashflow": 10_000_000,
+                "trailingPE": pe,
+                "operatingCashflow": 15_000_000,
+                "mostRecentQuarter": None,
+            }
+
+        results = []
+        for pe_val in [15.0, "Infinity", float("inf"), None]:
+            mock_ticker.info = make_info(pe_val)
+            mock_ticker_cls.return_value = mock_ticker
+            results.append(_fetch_fundamentals("TEST"))
+
+        df = pd.DataFrame(results)
+        # This is the exact operation that was failing
+        df.to_parquet("/dev/null", index=False)
 
 
 class TestApplyQualityFilters:

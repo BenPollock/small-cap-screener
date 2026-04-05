@@ -11,6 +11,7 @@ implementing the same interface.
 """
 
 import logging
+import math
 import time
 from datetime import date
 from pathlib import Path
@@ -71,6 +72,24 @@ def enrich_fundamentals(
     return universe.merge(fund_df, on="ticker", how="left")
 
 
+def _clean_numeric(value):
+    """Convert non-finite or non-numeric values to None.
+
+    yfinance can return strings like 'Infinity' or float('inf') for fields
+    such as trailingPE, which causes pyarrow serialization failures.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return None
+    try:
+        if math.isinf(value) or math.isnan(value):
+            return None
+    except TypeError:
+        return None
+    return value
+
+
 def _fetch_fundamentals(ticker: str, max_retries: int = 2) -> dict | None:
     """Fetch fundamental data for a single ticker.
 
@@ -116,13 +135,13 @@ def _fetch_fundamentals(ticker: str, max_retries: int = 2) -> dict | None:
 
             return {
                 "ticker": ticker,
-                "revenue_ttm": revenue_ttm,
-                "revenue_growth_yoy": revenue_growth,
-                "operating_margin": operating_margin,
-                "debt_to_equity": debt_to_equity,
-                "free_cash_flow": free_cash_flow,
-                "pe_ratio": pe_ratio,
-                "operating_cash_flow": operating_cf,
+                "revenue_ttm": _clean_numeric(revenue_ttm),
+                "revenue_growth_yoy": _clean_numeric(revenue_growth),
+                "operating_margin": _clean_numeric(operating_margin),
+                "debt_to_equity": _clean_numeric(debt_to_equity),
+                "free_cash_flow": _clean_numeric(free_cash_flow),
+                "pe_ratio": _clean_numeric(pe_ratio),
+                "operating_cash_flow": _clean_numeric(operating_cf),
                 "last_fiscal_date": last_fiscal,
             }
 
