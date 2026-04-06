@@ -155,61 +155,100 @@ def _fetch_fundamentals(
     return None
 
 
+def _run_quality_filters(
+    df: pd.DataFrame,
+    growth_threshold: float,
+    de_threshold: float,
+    recency_months: int,
+) -> pd.DataFrame:
+    """Apply quality filters with the given thresholds.
+
+    Returns filtered DataFrame with per-stage logging.
+    """
+    # Revenue growth (keep NaN — don't penalize missing data)
+    prev = len(df)
+    mask_growth = df["revenue_growth_yoy"].isna() | (
+        df["revenue_growth_yoy"] > growth_threshold
+    )
+    df = df[mask_growth].copy()
+    logger.info(
+        "After revenue growth filter (>%+.0f%%): %d/%d",
+        growth_threshold * 100, len(df), prev,
+    )
+
+    # Positive operating cash flow (keep NaN — don't penalize missing data)
+    prev = len(df)
+    mask_cf = df["operating_cash_flow"].isna() | (df["operating_cash_flow"] > 0)
+    df = df[mask_cf].copy()
+    logger.info("After operating cash flow filter: %d/%d", len(df), prev)
+
+    # Debt to equity
+    prev = len(df)
+    mask_de = df["debt_to_equity"].isna() | (df["debt_to_equity"] < de_threshold)
+    df = df[mask_de].copy()
+    logger.info(
+        "After debt-to-equity filter (<%.1f): %d/%d", de_threshold, len(df), prev,
+    )
+
+    # Recent financials
+    prev = len(df)
+    if "last_fiscal_date" in df.columns:
+        cutoff = pd.Timestamp(date.today()) - pd.DateOffset(months=recency_months)
+        mask_recent = df["last_fiscal_date"].isna() | (
+            pd.to_datetime(df["last_fiscal_date"]) >= cutoff
+        )
+        df = df[mask_recent].copy()
+        logger.info(
+            "After recent financials filter (%d mo): %d/%d",
+            recency_months, len(df), prev,
+        )
+
+    return df
+
+
+# Relaxation tiers: (growth_threshold, de_threshold, recency_months)
+_FILTER_TIERS = [
+    (-0.05, 2.0, 12),   # default: >-5% growth, D/E<2, 12-month recency
+    (-0.10, 2.5, 12),   # tier 1 relaxation
+    (-0.20, 3.0, 18),   # tier 2 relaxation
+]
+
+_MIN_SURVIVORS = 100
+
+
 def apply_quality_filters(df: pd.DataFrame) -> pd.DataFrame:
     """Apply quality filters to the enriched universe.
 
     Filters:
-    - Revenue growth > 0% YoY
+    - Revenue growth > -5% YoY (default)
     - Positive operating cash flow in latest quarter
     - Debt-to-equity < 2.0
-    - Has reported financials in the last 6 months
+    - Has reported financials in the last 12 months
 
-    Logs survivors at each stage. Relaxes thresholds if < 100 survivors.
+    Logs survivors at each stage. Progressively relaxes thresholds
+    if fewer than 100 tickers survive all filters combined.
     """
     if df.empty:
         return df
 
     initial = len(df)
 
-    # Revenue growth > 0%
-    prev = len(df)
-    mask_growth = df["revenue_growth_yoy"].notna() & (df["revenue_growth_yoy"] > 0)
-    grown = df[mask_growth].copy()
-    logger.info("After revenue growth filter (>0%%): %d/%d", len(grown), prev)
+    for tier_idx, (growth_th, de_th, recency_mo) in enumerate(_FILTER_TIERS):
+        result = _run_quality_filters(df, growth_th, de_th, recency_mo)
 
-    # If too aggressive, relax
-    if len(grown) < 100 and len(df) > 100:
-        logger.warning("Revenue growth filter too aggressive, relaxing to >-10%%")
-        mask_growth = df["revenue_growth_yoy"].notna() & (df["revenue_growth_yoy"] > -0.10)
-        grown = df[mask_growth].copy()
-        logger.info("After relaxed revenue growth filter: %d/%d", len(grown), prev)
+        if len(result) >= _MIN_SURVIVORS or tier_idx == len(_FILTER_TIERS) - 1:
+            if tier_idx > 0:
+                logger.warning(
+                    "Relaxed to tier %d (growth>%+.0f%%, D/E<%.1f, %dmo) — %d survivors",
+                    tier_idx, growth_th * 100, de_th, recency_mo, len(result),
+                )
+            break
 
-    df = grown
-
-    # Positive operating cash flow
-    prev = len(df)
-    mask_cf = df["operating_cash_flow"].notna() & (df["operating_cash_flow"] > 0)
-    # Also keep tickers where we don't have cash flow data (don't penalize missing data)
-    mask_cf = mask_cf | df["operating_cash_flow"].isna()
-    df = df[mask_cf].copy()
-    logger.info("After operating cash flow filter: %d/%d", len(df), prev)
-
-    # Debt to equity < 2.0
-    prev = len(df)
-    mask_de = df["debt_to_equity"].isna() | (df["debt_to_equity"] < 2.0)
-    df = df[mask_de].copy()
-    logger.info("After debt-to-equity filter (<2.0): %d/%d", len(df), prev)
-
-    # Recent financials (within 6 months)
-    prev = len(df)
-    if "last_fiscal_date" in df.columns:
-        six_months_ago = pd.Timestamp(date.today()) - pd.DateOffset(months=6)
-        mask_recent = df["last_fiscal_date"].isna() | (
-            pd.to_datetime(df["last_fiscal_date"]) >= six_months_ago
+        logger.warning(
+            "Only %d survivors at tier %d, relaxing filters...",
+            len(result), tier_idx,
         )
-        df = df[mask_recent].copy()
-        logger.info("After recent financials filter: %d/%d", len(df), prev)
 
-    df.reset_index(drop=True, inplace=True)
-    logger.info("Quality filter summary: %d/%d survived", len(df), initial)
-    return df
+    result.reset_index(drop=True, inplace=True)
+    logger.info("Quality filter summary: %d/%d survived", len(result), initial)
+    return result

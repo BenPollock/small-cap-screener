@@ -14,7 +14,7 @@ Core screening pipeline modules. Each module handles one stage of the data flow:
 
 ### fundamentals.py
 - `enrich_fundamentals(universe, cache_dir) → DataFrame` — Sequential fetching. Adds: revenue_ttm, revenue_growth_yoy, operating_margin, debt_to_equity, free_cash_flow, pe_ratio, operating_cash_flow, last_fiscal_date
-- `apply_quality_filters(df) → DataFrame` — Filters on growth, OCF, D/E, recency. Auto-relaxes if too aggressive.
+- `apply_quality_filters(df) → DataFrame` — Filters on growth (>-5%), OCF, D/E (<2.0), recency (12mo). Progressively relaxes through tiers if <100 survivors.
 
 ### momentum.py
 - `compute_momentum_scores(df, cache_dir) → DataFrame` — Sequential fetching. Adds: roc_6m, roc_1m, sector_roc_6m, relative_strength, momentum_score
@@ -42,7 +42,7 @@ Core screening pipeline modules. Each module handles one stage of the data flow:
 ## Gotchas
 - yfinance `.info` returns `debtToEquity` as a percentage (e.g., 50.0 for 0.5x) — we convert to ratio
 - `mostRecentQuarter` from yfinance is a Unix timestamp, not a date
-- Quality filters auto-relax threshold from >0% to >-10% growth if < 100 tickers survive
+- Quality filters use tiered relaxation (growth: -5%→-10%→-20%, D/E: 2.0→2.5→3.0, recency: 12→12→18mo) if <100 tickers survive all filters combined
 - All modules cache by date — same-day re-runs are instant
 - Universe enrichment uses progressive checkpoints (`_*_partial_*` files in cache dir); cleaned up after final cache write
 - Pipeline runs fundamentals then momentum sequentially; momentum runs on the quality-filtered set

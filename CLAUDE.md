@@ -60,7 +60,7 @@ All stages run sequentially. EDGAR uses a token-bucket rate limiter (10 req/sec)
 - **Sequential fetching** throughout — avoids OS-level thread/DNS exhaustion on macOS
 - **Token-bucket rate limiter** for SEC EDGAR fetches (10 req/sec)
 - **Jegadeesh-Titman momentum** with short-term reversal filter
-- **Quality filters auto-relax** if < 100 tickers survive
+- **Quality filters auto-relax** through progressive tiers if < 100 tickers survive all filters combined
 
 ## Data Sources & Constraints
 

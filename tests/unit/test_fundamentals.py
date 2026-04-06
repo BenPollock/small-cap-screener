@@ -161,32 +161,32 @@ class TestApplyQualityFilters:
     """Tests for quality filtering logic."""
 
     def test_filters_negative_growth(self):
-        """Should filter out tickers with negative revenue growth."""
+        """Should filter out tickers with growth below -5% threshold."""
         df = pd.DataFrame({
-            "ticker": ["GROW", "SHRK"],
-            "revenue_growth_yoy": [0.10, -0.20],
-            "operating_cash_flow": [10e6, 10e6],
-            "debt_to_equity": [0.5, 0.5],
+            "ticker": ["GROW", "MILD", "SHRK"],
+            "revenue_growth_yoy": [0.10, -0.03, -0.20],
+            "operating_cash_flow": [10e6, 10e6, 10e6],
+            "debt_to_equity": [0.5, 0.5, 0.5],
         })
 
         result = apply_quality_filters(df)
-        assert len(result) == 1
-        assert result.iloc[0]["ticker"] == "GROW"
+        assert len(result) == 2
+        assert set(result["ticker"]) == {"GROW", "MILD"}
 
-    def test_relaxes_growth_filter_if_too_aggressive(self):
-        """Should relax growth filter when < 100 survivors from large input."""
-        # Create 150 tickers, 80 with slightly negative growth
+    def test_relaxes_filters_if_too_few_survivors(self):
+        """Should progressively relax thresholds when < 100 tickers survive."""
+        # Create 150 tickers all at -8% growth — fails default (-5%) but
+        # passes tier 1 relaxation (-10%)
         tickers = [f"T{i:03d}" for i in range(150)]
-        growth = [0.05] * 70 + [-0.05] * 80
         df = pd.DataFrame({
             "ticker": tickers,
-            "revenue_growth_yoy": growth,
+            "revenue_growth_yoy": [-0.08] * 150,
             "operating_cash_flow": [10e6] * 150,
             "debt_to_equity": [0.5] * 150,
         })
 
         result = apply_quality_filters(df)
-        # With relaxed filter (>-10%), all 150 should survive
+        # Tier 1 relaxation (>-10%) should keep all 150
         assert len(result) == 150
 
     def test_filters_high_debt(self):
@@ -203,7 +203,7 @@ class TestApplyQualityFilters:
         assert result.iloc[0]["ticker"] == "LOW"
 
     def test_handles_nan_values(self):
-        """Should not crash on NaN fundamental values."""
+        """Should keep tickers with all-NaN fundamentals (missing != bad)."""
         df = pd.DataFrame({
             "ticker": ["NAN"],
             "revenue_growth_yoy": [None],
@@ -212,8 +212,8 @@ class TestApplyQualityFilters:
         })
 
         result = apply_quality_filters(df)
-        # NaN revenue growth is filtered out
-        assert len(result) == 0
+        # NaN values are kept — missing data is not penalized
+        assert len(result) == 1
 
     def test_keeps_missing_cash_flow(self):
         """Should keep tickers with missing cash flow data."""
