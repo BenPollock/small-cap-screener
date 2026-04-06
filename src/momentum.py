@@ -56,9 +56,17 @@ def compute_momentum_scores(
     """
     cache_path = Path(cache_dir) / f"momentum_{date.today().isoformat()}.parquet"
     if cache_path.exists():
-        logger.info("Loading cached momentum from %s", cache_path)
         cached = pd.read_parquet(cache_path)
-        return df.merge(cached, on="ticker", how="left")
+        cached_tickers = set(cached["ticker"])
+        input_tickers = set(df["ticker"])
+        missing = input_tickers - cached_tickers
+        if not missing:
+            logger.info("Loading cached momentum from %s", cache_path)
+            return df.merge(cached, on="ticker", how="left")
+        logger.warning(
+            "Momentum cache stale: %d/%d tickers missing. Recomputing.",
+            len(missing), len(input_tickers),
+        )
 
     # Pre-fetch sector ETF data
     sector_momentum = _fetch_sector_etf_momentum()

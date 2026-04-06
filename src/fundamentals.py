@@ -40,9 +40,17 @@ def enrich_fundamentals(
     """
     cache_path = Path(cache_dir) / f"fundamentals_{date.today().isoformat()}.parquet"
     if cache_path.exists():
-        logger.info("Loading cached fundamentals from %s", cache_path)
         cached = pd.read_parquet(cache_path)
-        return universe.merge(cached, on="ticker", how="left")
+        cached_tickers = set(cached["ticker"])
+        input_tickers = set(universe["ticker"])
+        missing = input_tickers - cached_tickers
+        if not missing:
+            logger.info("Loading cached fundamentals from %s", cache_path)
+            return universe.merge(cached, on="ticker", how="left")
+        logger.warning(
+            "Fundamentals cache stale: %d/%d tickers missing. Recomputing.",
+            len(missing), len(input_tickers),
+        )
 
     cache_path.parent.mkdir(parents=True, exist_ok=True)
 
