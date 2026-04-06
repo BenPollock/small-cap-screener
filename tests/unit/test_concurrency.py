@@ -1,7 +1,6 @@
-"""Unit tests for concurrency features: thread-safe rate limiter, progressive caching,
-exchange pre-filtering, batch volume prescreen, and --workers CLI flag."""
+"""Unit tests for rate limiter, progressive caching,
+exchange pre-filtering, and batch volume prescreen."""
 
-import threading
 import time
 from datetime import date
 from unittest.mock import MagicMock, patch
@@ -13,8 +12,8 @@ import responses
 from edgar.rate_limiter import RateLimiter
 
 
-class TestThreadSafeRateLimiter:
-    """Tests for the thread-safe token-bucket rate limiter."""
+class TestRateLimiter:
+    """Tests for the rate limiter."""
 
     def test_enforces_minimum_interval(self):
         """Consecutive calls should be spaced by at least the interval."""
@@ -26,29 +25,6 @@ class TestThreadSafeRateLimiter:
         elapsed = time.time() - start
 
         assert elapsed >= 0.1  # 1/10 sec interval
-
-    def test_thread_safety(self):
-        """Multiple threads sharing a limiter should not violate the rate limit."""
-        limiter = RateLimiter(max_per_second=10)
-        timestamps = []
-        lock = threading.Lock()
-
-        def worker():
-            limiter.wait()
-            with lock:
-                timestamps.append(time.time())
-
-        threads = [threading.Thread(target=worker) for _ in range(5)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
-
-        timestamps.sort()
-        # Each consecutive pair should be >= 0.09s apart (allow tiny float imprecision)
-        for i in range(1, len(timestamps)):
-            gap = timestamps[i] - timestamps[i - 1]
-            assert gap >= 0.08, f"Gap {gap:.4f}s between requests {i-1} and {i} is too small"
 
     def test_no_unnecessary_wait_on_first_call(self):
         """First call should not block."""
@@ -184,7 +160,7 @@ class TestProgressiveCaching:
 
         candidates = pd.DataFrame({"ticker": ["DONE", "NEW"]})
         result = _enrich_with_yfinance(
-            candidates, max_workers=2, cache_dir=str(tmp_path),
+            candidates, cache_dir=str(tmp_path),
         )
 
         # Should have both tickers
@@ -196,25 +172,11 @@ class TestProgressiveCaching:
         assert not partial_path.exists()
 
     @patch("src.fundamentals.yf.Ticker")
-    def test_fundamentals_resumes_from_partial(self, mock_ticker_cls, tmp_path):
-        """Should resume fundamentals from partial cache."""
+    def test_fundamentals_caches_result(self, mock_ticker_cls, tmp_path):
+        """Should cache fundamentals result after fetching."""
         from src.fundamentals import enrich_fundamentals
 
-        partial_path = tmp_path / f"_fundamentals_partial_{date.today().isoformat()}.parquet"
-        existing = pd.DataFrame([{
-            "ticker": "DONE",
-            "revenue_ttm": 100e6,
-            "revenue_growth_yoy": 0.15,
-            "operating_margin": 0.12,
-            "debt_to_equity": 0.5,
-            "free_cash_flow": 10e6,
-            "pe_ratio": 15.0,
-            "operating_cash_flow": 15e6,
-            "last_fiscal_date": None,
-        }])
-        existing.to_parquet(partial_path, index=False)
-
-        # Mock for NEW ticker
+        # Mock for tickers
         mock_ticker = MagicMock()
         mock_ticker.info = {
             "totalRevenue": 200e6, "revenueGrowth": 0.20,
@@ -225,56 +187,16 @@ class TestProgressiveCaching:
         mock_ticker_cls.return_value = mock_ticker
 
         universe = pd.DataFrame({
-            "ticker": ["DONE", "NEW"],
-            "company_name": ["Done Co", "New Co"],
+            "ticker": ["AAA", "BBB"],
+            "company_name": ["A Co", "B Co"],
         })
         result = enrich_fundamentals(universe, cache_dir=str(tmp_path))
 
         # Both tickers should be present
         assert len(result) == 2
-        assert "DONE" in result["ticker"].values
-        assert "NEW" in result["ticker"].values
+        assert "AAA" in result["ticker"].values
+        assert "BBB" in result["ticker"].values
 
-        # Partial file should be cleaned up, final cache should exist
-        assert not partial_path.exists()
+        # Final cache should exist
         final_cache = tmp_path / f"fundamentals_{date.today().isoformat()}.parquet"
         assert final_cache.exists()
-
-
-class TestWorkersCliFlag:
-    """Tests for the --workers CLI flag."""
-
-    @patch("src.pipeline.run_pipeline")
-    def test_workers_flag_default(self, mock_pipeline):
-        """--workers defaults to 8."""
-        from click.testing import CliRunner
-        from src.cli import cli
-
-        mock_pipeline.return_value = pd.DataFrame()
-        runner = CliRunner()
-        result = runner.invoke(cli, ["run"])
-
-        assert result.exit_code == 0
-        assert mock_pipeline.call_args.kwargs["max_workers"] == 4
-
-    @patch("src.pipeline.run_pipeline")
-    def test_workers_flag_custom(self, mock_pipeline):
-        """--workers should pass custom value."""
-        from click.testing import CliRunner
-        from src.cli import cli
-
-        mock_pipeline.return_value = pd.DataFrame()
-        runner = CliRunner()
-        result = runner.invoke(cli, ["run", "--workers", "4"])
-
-        assert result.exit_code == 0
-        assert mock_pipeline.call_args.kwargs["max_workers"] == 4
-
-    def test_workers_flag_in_help(self):
-        """--workers should appear in help text."""
-        from click.testing import CliRunner
-        from src.cli import cli
-
-        runner = CliRunner()
-        result = runner.invoke(cli, ["run", "--help"])
-        assert "--workers" in result.output

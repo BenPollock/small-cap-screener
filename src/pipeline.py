@@ -2,13 +2,9 @@
 
 Coordinates the full screening pipeline, handling errors gracefully
 so that one bad ticker doesn't crash the entire run.
-
-Fundamentals and momentum are independent after universe filtering and
-run concurrently (Proposal 3 from performance analysis).
 """
 
 import logging
-from concurrent.futures import ThreadPoolExecutor
 
 import pandas as pd
 
@@ -22,7 +18,6 @@ def run_pipeline(
     min_mcap: int = 200,
     max_mcap: int = 2000,
     cache_dir: str = "./data/cache",
-    max_workers: int = 8,
 ) -> pd.DataFrame:
     """Run the full screening pipeline.
 
@@ -32,9 +27,6 @@ def run_pipeline(
     4. Compute insider buying scores (unless skip_edgar)
     5. Compute composite scores and rank
     6. Render output
-
-    Args:
-        max_workers: Max concurrent fetch threads per stage (default 8).
 
     Returns the final ranked DataFrame.
     """
@@ -49,7 +41,6 @@ def run_pipeline(
     logger.info("Fetching investable universe...")
     universe = get_universe(
         min_mcap=min_mcap, max_mcap=max_mcap, cache_dir=cache_dir,
-        max_workers=max_workers,
     )
     logger.info("Universe: %d tickers", len(universe))
 
@@ -57,20 +48,9 @@ def run_pipeline(
         logger.error("No tickers in universe after filtering. Exiting.")
         return pd.DataFrame()
 
-    # Steps 2+3: Fundamentals and momentum run concurrently — they hit
-    # different yfinance endpoints and are independent after universe filtering.
-    logger.info("Fetching fundamentals and momentum concurrently...")
-
-    with ThreadPoolExecutor(max_workers=2) as stage_executor:
-        fund_future = stage_executor.submit(
-            enrich_fundamentals, universe, cache_dir, max_workers,
-        )
-        mom_future = stage_executor.submit(
-            compute_momentum_scores, universe, cache_dir, max_workers,
-        )
-
-        enriched = fund_future.result()
-        momentum_df = mom_future.result()
+    # Step 2: Fundamentals
+    logger.info("Fetching fundamentals...")
+    enriched = enrich_fundamentals(universe, cache_dir)
 
     filtered = apply_quality_filters(enriched)
     logger.info("After quality filters: %d tickers", len(filtered))
@@ -78,6 +58,10 @@ def run_pipeline(
     if filtered.empty:
         logger.error("No tickers survived quality filters. Exiting.")
         return pd.DataFrame()
+
+    # Step 3: Momentum
+    logger.info("Computing momentum scores...")
+    momentum_df = compute_momentum_scores(filtered, cache_dir)
 
     # Merge momentum into quality-filtered tickers
     mom_cols = ["ticker", "roc_6m", "roc_1m", "sector_roc_6m", "relative_strength", "momentum_score"]
@@ -92,7 +76,7 @@ def run_pipeline(
     else:
         logger.info("Fetching EDGAR insider data...")
         with_insider = compute_insider_scores(
-            with_momentum, cache_dir=cache_dir, max_workers=min(max_workers, 10),
+            with_momentum, cache_dir=cache_dir,
         )
 
     # Step 5: Composite scoring and ranking

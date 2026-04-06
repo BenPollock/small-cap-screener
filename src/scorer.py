@@ -108,7 +108,10 @@ def _percentile_rank(df: pd.DataFrame, column: str) -> pd.Series:
     non_null = series.dropna()
     if non_null.nunique() == 1:
         result = pd.Series(0.0, index=df.index)
-        result[series.notna()] = 50.0
+        # If all values are zero, there's no signal — rank stays 0
+        # If all values are tied at a non-zero value, assign neutral 50
+        if non_null.iloc[0] != 0:
+            result[series.notna()] = 50.0
         return result
 
     # Standard percentile rank

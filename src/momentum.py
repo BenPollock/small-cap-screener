@@ -9,7 +9,6 @@ yfinance data fetching patterns.
 
 import logging
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date
 from pathlib import Path
 
@@ -39,7 +38,6 @@ SECTOR_ETFS = {
 def compute_momentum_scores(
     df: pd.DataFrame,
     cache_dir: str = "./data/cache",
-    max_workers: int = 8,
 ) -> pd.DataFrame:
     """Compute momentum scores for all tickers in the DataFrame.
 
@@ -65,29 +63,22 @@ def compute_momentum_scores(
     # Pre-fetch sector ETF data
     sector_momentum = _fetch_sector_etf_momentum()
 
-    # Fetch price history for all tickers concurrently
+    # Fetch price history for all tickers sequentially
     ticker_sectors = list(zip(df["ticker"].tolist(), df.get("sector", pd.Series([""] * len(df))).tolist()))
     total = len(ticker_sectors)
     momentum_data = []
-    completed = 0
 
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {
-            executor.submit(_compute_single_momentum, t, s, sector_momentum): t
-            for t, s in ticker_sectors
-        }
-        for future in as_completed(futures):
-            completed += 1
-            if completed % 50 == 0:
-                logger.info("Momentum progress: %d/%d", completed, total)
-            try:
-                momentum_data.append(future.result())
-            except Exception as e:
-                ticker = futures[future]
-                logger.debug("Failed momentum for %s: %s", ticker, e)
-                momentum_data.append({"ticker": ticker, "roc_6m": None, "roc_1m": None,
-                                      "sector_roc_6m": None, "relative_strength": None,
-                                      "momentum_score": None})
+    for i, (ticker, sector) in enumerate(ticker_sectors, 1):
+        if i % 50 == 0:
+            logger.info("Momentum progress: %d/%d", i, total)
+        try:
+            momentum_data.append(_compute_single_momentum(ticker, sector, sector_momentum))
+        except Exception as e:
+            logger.debug("Failed momentum for %s: %s", ticker, e)
+            momentum_data.append({"ticker": ticker, "roc_6m": None, "roc_1m": None,
+                                  "sector_roc_6m": None, "relative_strength": None,
+                                  "momentum_score": None})
+
     mom_df = pd.DataFrame(momentum_data)
 
     # Apply short-term reversal penalty
@@ -101,28 +92,24 @@ def compute_momentum_scores(
 
 
 def _fetch_sector_etf_momentum() -> dict[str, float]:
-    """Fetch 6-month ROC for sector ETFs concurrently.
+    """Fetch 6-month ROC for sector ETFs.
 
     Returns dict mapping sector name to 6-month ROC.
     """
     sector_rocs = {}
     unique_etfs = set(SECTOR_ETFS.values())
 
-    def _fetch_one_etf(etf: str) -> tuple[str, float | None]:
+    etf_rocs = {}
+    for etf in unique_etfs:
         try:
             t = yf.Ticker(etf)
             hist = t.history(period="1y")
             if len(hist) >= 126:
                 roc_6m = (hist["Close"].iloc[-1] / hist["Close"].iloc[-126] - 1) * 100
-                return etf, roc_6m
+                etf_rocs[etf] = roc_6m
         except Exception as e:
             logger.debug("Failed to fetch sector ETF %s: %s", etf, e)
-        return etf, None
 
-    with ThreadPoolExecutor(max_workers=min(len(unique_etfs), 8)) as executor:
-        results = executor.map(_fetch_one_etf, unique_etfs)
-
-    etf_rocs = {etf: roc for etf, roc in results if roc is not None}
     for sector, sector_etf in SECTOR_ETFS.items():
         if sector_etf in etf_rocs:
             sector_rocs[sector] = etf_rocs[sector_etf]

@@ -19,12 +19,19 @@ class TestPercentileRank:
         # Highest value should have highest rank
         assert result.iloc[4] > result.iloc[0]
 
-    def test_all_same_values(self):
-        """Should return 50 for all when values are identical."""
+    def test_all_same_nonzero_values(self):
+        """Should return 50 for all when values are identical and non-zero."""
         df = pd.DataFrame({"score": [10.0, 10.0, 10.0]})
         result = _percentile_rank(df, "score")
 
         assert (result == 50.0).all()
+
+    def test_all_zero_values(self):
+        """Should return 0 for all when values are all zero (no signal)."""
+        df = pd.DataFrame({"score": [0.0, 0.0, 0.0]})
+        result = _percentile_rank(df, "score")
+
+        assert (result == 0.0).all()
 
     def test_single_ticker(self):
         """Should return 50 for a single ticker."""

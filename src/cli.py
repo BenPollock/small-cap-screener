@@ -33,8 +33,7 @@ def cli(verbose):
 @click.option("--min-mcap", default=200, type=int, help="Minimum market cap in millions.")
 @click.option("--max-mcap", default=2000, type=int, help="Maximum market cap in millions.")
 @click.option("--cache-dir", default="./data/cache", help="Cache directory.")
-@click.option("--workers", default=4, type=int, help="Max concurrent fetch threads per stage (default: 4).")
-def run(top, output_format, skip_edgar, min_mcap, max_mcap, cache_dir, workers):
+def run(top, output_format, skip_edgar, min_mcap, max_mcap, cache_dir):
     """Run the full screening pipeline and output top picks."""
     from src.pipeline import run_pipeline
 
@@ -45,7 +44,6 @@ def run(top, output_format, skip_edgar, min_mcap, max_mcap, cache_dir, workers):
         min_mcap=min_mcap,
         max_mcap=max_mcap,
         cache_dir=cache_dir,
-        max_workers=workers,
     )
 
 

@@ -58,7 +58,6 @@ Options:
   --min-mcap N         Minimum market cap in millions (default: 200)
   --max-mcap N         Maximum market cap in millions (default: 2000)
   --cache-dir PATH     Cache directory (default: ./data/cache)
-  --workers N          Max concurrent fetch threads per stage (default: 8)
 ```
 
 ### `screener portfolio log`
@@ -149,17 +148,17 @@ screener run --min-mcap 300 --max-mcap 1500 --skip-edgar
 
 ```
 Universe (SEC EDGAR tickers + exchange pre-filter + batch volume prescreen)
-  → Enrich (yfinance .info, concurrent via ThreadPoolExecutor)
+  → Enrich (yfinance .info with progressive checkpoints)
   → Filter (market cap, volume, exchange, no SPACs/ADRs/REITs)
-  ┌→ Fundamentals (revenue growth, margins, D/E, FCF via yfinance)  ← run in parallel
-  └→ Momentum (6-month ROC, 1-month ROC, sector-relative strength)  ← run in parallel
+  → Fundamentals (revenue growth, margins, D/E, FCF via yfinance)
   → Quality Filter (growth > 0%, positive OCF, D/E < 2.0)
-  → Insider Buying (EDGAR Form 4, concurrent with token-bucket rate limiter)
+  → Momentum (6-month ROC, 1-month ROC, sector-relative strength)
+  → Insider Buying (EDGAR Form 4, rate-limited to 10 req/sec)
   → Composite Score (weighted percentile ranks)
   → Output (terminal table, CSV, markdown, auto-saved JSON)
 ```
 
-All I/O-bound stages use `ThreadPoolExecutor` for concurrent fetching. Fundamentals and momentum run as parallel pipeline stages. EDGAR fetches use a thread-safe token-bucket rate limiter to stay within SEC's 10 req/s limit. Long-running stages write progressive checkpoints so a crash doesn't lose all progress.
+All stages run sequentially to avoid OS-level thread/DNS exhaustion. EDGAR fetches use a token-bucket rate limiter to stay within SEC's 10 req/s limit. Universe enrichment writes progressive checkpoints so a crash doesn't lose all progress.
 
 ### Scoring Weights
 
@@ -176,7 +175,7 @@ All I/O-bound stages use `ThreadPoolExecutor` for concurrent fetching. Fundament
 | yfinance | Price history, fundamentals, market cap | ~2000 req/hr | None |
 | SEC EDGAR | Company tickers, Form 4 insider filings | 10 req/sec | User-Agent with email |
 
-All fetched data is cached by date in `data/cache/`. Same-day re-runs are instant. Long-running stages write partial checkpoints (`_*_partial_*` files) so that a crash mid-run can resume where it left off.
+All fetched data is cached by date in `data/cache/`. Same-day re-runs are instant. Universe enrichment writes partial checkpoints (`_*_partial_*` files) so that a crash mid-run can resume where it left off.
 
 ## Upstream
 

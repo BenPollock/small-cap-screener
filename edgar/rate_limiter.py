@@ -10,7 +10,6 @@ The SEC requires:
 """
 
 import logging
-import threading
 import time
 from functools import wraps
 
@@ -26,26 +25,23 @@ DEFAULT_INITIAL_BACKOFF = 10.0  # seconds
 
 
 class RateLimiter:
-    """Thread-safe token-bucket rate limiter for SEC EDGAR API.
+    """Simple rate limiter for SEC EDGAR API.
 
-    Enforces max 10 requests/second across concurrent threads.
-    Each call to wait() acquires one token; if the bucket is empty,
-    the caller blocks until a token is available.
+    Enforces max 10 requests/second. Each call to wait() blocks until
+    enough time has passed since the last request.
     """
 
     def __init__(self, max_per_second: int = MAX_REQUESTS_PER_SECOND):
         self._interval = 1.0 / max_per_second
-        self._lock = threading.Lock()
         self._last_request_time = 0.0
 
     def wait(self) -> None:
         """Acquire a rate-limit token, blocking if necessary."""
-        with self._lock:
-            now = time.time()
-            earliest = self._last_request_time + self._interval
-            if now < earliest:
-                time.sleep(earliest - now)
-            self._last_request_time = time.time()
+        now = time.time()
+        earliest = self._last_request_time + self._interval
+        if now < earliest:
+            time.sleep(earliest - now)
+        self._last_request_time = time.time()
 
 
 def is_rate_limit_error(exc: Exception) -> bool:

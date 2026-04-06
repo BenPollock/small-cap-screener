@@ -11,13 +11,14 @@ tests/
 │   ├── sample_yfinance_info.json
 │   └── sample_form4.xml
 ├── unit/
-│   ├── test_universe.py      # SEC ticker fetching, all filter logic, cache, exchange pre-filter, batch prescreen, progressive caching
+│   ├── test_universe.py      # SEC ticker fetching, all filter logic, cache, exchange pre-filter, batch prescreen
 │   ├── test_fundamentals.py  # yfinance fetching, quality filters, edge cases
 │   ├── test_momentum.py      # ROC calculations, reversal penalty, cache
 │   ├── test_insider.py       # Form 4 parsing, scoring, executive weighting
 │   ├── test_scorer.py        # Percentile ranking, composite scoring, edge cases
 │   ├── test_output.py        # Terminal/CSV/markdown rendering, JSON saving
-│   └── test_portfolio.py     # Storage roundtrip, price fetching, SPY return
+│   ├── test_portfolio.py     # Storage roundtrip, price fetching, SPY return
+│   └── test_concurrency.py   # Rate limiter, exchange pre-filter, batch prescreen, progressive caching
 └── e2e/
     ├── test_full_pipeline.py    # Full pipeline with all HTTP mocked
     ├── test_cli_commands.py     # Click CliRunner for all commands + flags
@@ -30,7 +31,6 @@ tests/
 - **Use `@patch("src.module.yf.Ticker")`** to mock yfinance at the import site
 - **Use `@responses.activate`** for raw HTTP mocking (SEC EDGAR ticker endpoint)
 - **Mock `_batch_volume_prescreen`** in E2E/pipeline tests to avoid real `yf.download()` calls
-- **Rate limiter tests** use real threading to verify thread safety
 
 ## Fixtures (conftest.py)
 - `sample_universe` — 5 tickers with market cap, volume, sector data

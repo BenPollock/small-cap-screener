@@ -18,7 +18,6 @@ Filters applied:
 import json
 import logging
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime
 from pathlib import Path
 
@@ -56,7 +55,6 @@ def get_universe(
     max_mcap: int = 2000,
     cache_dir: str = "./data/cache",
     include_reits: bool = False,
-    max_workers: int = 8,
 ) -> pd.DataFrame:
     """Build the filtered investable universe.
 
@@ -87,12 +85,12 @@ def get_universe(
     # before expensive individual .info calls
     all_tickers = candidates["ticker"].tolist()
     logger.info("Running batch volume prescreen on %d tickers...", len(all_tickers))
-    volume_passed = set(_batch_volume_prescreen(all_tickers, max_workers=max_workers))
+    volume_passed = set(_batch_volume_prescreen(all_tickers))
     candidates = candidates[candidates["ticker"].isin(volume_passed)].copy()
     logger.info("After volume prescreen: %d tickers", len(candidates))
 
     # Enrich survivors with full yfinance .info data (market cap, sector, etc.)
-    enriched = _enrich_with_yfinance(candidates, max_workers=max_workers)
+    enriched = _enrich_with_yfinance(candidates, cache_dir=cache_dir)
     logger.info("Enriched %d tickers with yfinance data", len(enriched))
 
     # Apply filters
@@ -227,7 +225,7 @@ def _clean_tickers(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _batch_volume_prescreen(
-    tickers: list[str], min_dollar_volume: float = 500_000, max_workers: int = 4,
+    tickers: list[str], min_dollar_volume: float = 500_000,
 ) -> list[str]:
     """Use yf.download() batch API to quickly screen by dollar volume.
 
@@ -247,7 +245,7 @@ def _batch_volume_prescreen(
         try:
             data = yf.download(
                 batch, period="5d", group_by="ticker", progress=False,
-                threads=max_workers,
+                threads=False,
             )
             if data.empty:
                 continue
@@ -291,17 +289,12 @@ def _fallback_russell2000() -> pd.DataFrame:
         return pd.DataFrame(columns=["ticker", "company_name", "cik"])
 
 
-
 def _enrich_with_yfinance(
     candidates: pd.DataFrame,
-    max_workers: int = 4,
     cache_dir: str = "./data/cache",
     checkpoint_interval: int = 100,
 ) -> pd.DataFrame:
     """Enrich candidate tickers with market cap, volume, sector from yfinance.
-
-    Uses ThreadPoolExecutor for concurrent fetching. yfinance allows ~2000 req/hr;
-    4 workers keep throughput well under that limit.
 
     Writes partial results every checkpoint_interval tickers so that a crash
     doesn't lose all progress. On restart, resumes from the partial file.
@@ -323,19 +316,22 @@ def _enrich_with_yfinance(
     completed = len(done_tickers)
     new_since_checkpoint = 0
 
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {executor.submit(_fetch_ticker_info, t): t for t in remaining}
-        for future in as_completed(futures):
-            completed += 1
-            if completed % 50 == 0:
-                logger.info("Universe enrichment progress: %d/%d", completed, total)
-            try:
-                info = future.result()
-                if info is not None:
-                    enriched_rows.append(info)
-                    new_since_checkpoint += 1
-            except Exception as e:
-                logger.debug("Failed to fetch info for %s: %s", futures[future], e)
+    for ticker in remaining:
+        completed += 1
+        if completed % 50 == 0:
+            logger.info("Universe enrichment progress: %d/%d", completed, total)
+        try:
+            info = _fetch_ticker_info(ticker)
+            if info is not None:
+                enriched_rows.append(info)
+                new_since_checkpoint += 1
+        except Exception as e:
+            logger.debug("Failed to fetch info for %s: %s", ticker, e)
+
+        # Periodic checkpoint
+        if new_since_checkpoint >= checkpoint_interval:
+            pd.DataFrame(enriched_rows).to_parquet(partial_path, index=False)
+            new_since_checkpoint = 0
 
     # Final write + cleanup
     result = pd.DataFrame(enriched_rows)
