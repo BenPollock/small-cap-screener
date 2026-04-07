@@ -7,7 +7,7 @@ fetches current prices and computes returns vs SPY.
 
 import json
 import logging
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -132,9 +132,13 @@ def _fetch_current_prices(tickers: list[str]) -> dict[str, float]:
 
 def _compute_spy_return(start_date: date) -> float:
     """Compute SPY return from start_date to today."""
+    if start_date >= date.today():
+        return 0.0
     try:
         spy = yf.Ticker("SPY")
-        hist = spy.history(start=start_date.isoformat(), end=date.today().isoformat())
+        # yfinance 'end' is exclusive, so add 1 day to include today's data
+        end = date.today() + timedelta(days=1)
+        hist = spy.history(start=start_date.isoformat(), end=end.isoformat())
         if len(hist) >= 2:
             return (hist["Close"].iloc[-1] / hist["Close"].iloc[0] - 1) * 100
     except Exception as e:
