@@ -15,21 +15,18 @@ from datetime import date
 
 import pandas as pd
 
-from edgar.rate_limiter import RateLimiter, edgar_retry
+from edgar_client.rate_limiter import RateLimiter, edgar_retry
 
 logger = logging.getLogger(__name__)
 
 try:
-    from edgartools import Company, set_identity
+    from edgar import Company, set_identity
 except ImportError:
-    try:
-        from edgar import Company, set_identity
-    except ImportError:
-        Company = None  # type: ignore[assignment,misc]
-        set_identity = None  # type: ignore[assignment]
+    Company = None  # type: ignore[assignment,misc]
+    set_identity = None  # type: ignore[assignment]
 
 # Default User-Agent for SEC — must include contact email
-DEFAULT_USER_AGENT = "SmallCapScreener/1.0 (ben@example.com)"
+DEFAULT_USER_AGENT = "SmallCapScreener/1.0 (megabenman@gmail.com)"
 
 # Only open-market purchases (P) and sales (S)
 _TRANSACTION_CODES = {"P", "S"}
@@ -106,7 +103,7 @@ class EdgarClient:
         try:
             filings = company.get_filings(form="4")
         except Exception as exc:
-            from edgar.rate_limiter import is_rate_limit_error
+            from edgar_client.rate_limiter import is_rate_limit_error
             if is_rate_limit_error(exc):
                 raise
             logger.warning("Could not retrieve Form 4 filings for %s", symbol)

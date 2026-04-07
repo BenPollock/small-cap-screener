@@ -41,9 +41,9 @@ All stages run sequentially. EDGAR uses a token-bucket rate limiter (10 req/sec)
 | `src/fundamentals.py` | Fetch revenue, margins, D/E, FCF via yfinance `.info`. Apply quality filters |
 | `src/momentum.py` | 6-month and 1-month ROC, relative strength vs sector ETFs, reversal penalty |
 | `src/insider.py` | Orchestrates EDGAR Form 4 insider buying score computation (rate-limited) |
-| `edgar/fetcher.py` | EDGAR API client — Form 4 fetching via edgartools. Adapted from claude-backtester |
-| `edgar/insider_parser.py` | Form 4 parsing: purchase filtering, dollar value scoring, CEO/CFO 2x weighting |
-| `edgar/rate_limiter.py` | Token-bucket rate limiter (10 req/sec) + retry with exponential backoff |
+| `edgar_client/fetcher.py` | EDGAR API client — Form 4 fetching via edgartools. Adapted from claude-backtester |
+| `edgar_client/insider_parser.py` | Form 4 parsing: purchase filtering, dollar value scoring, CEO/CFO 2x weighting |
+| `edgar_client/rate_limiter.py` | Token-bucket rate limiter (10 req/sec) + retry with exponential backoff |
 | `src/scorer.py` | Percentile rank normalization + weighted composite scoring |
 | `src/output.py` | Rich terminal table, CSV, or markdown output. Auto-saves JSON |
 | `src/portfolio.py` | Paper portfolio: log picks, track returns vs SPY |

@@ -29,7 +29,7 @@ dev = [
 screener = "src.cli:cli"
 
 [tool.setuptools.packages.find]
-include = ["src*", "edgar*"]
+include = ["src*", "edgar_client*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

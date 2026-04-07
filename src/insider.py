@@ -18,8 +18,8 @@ from pathlib import Path
 
 import pandas as pd
 
-from edgar.fetcher import EdgarClient
-from edgar.insider_parser import parse_insider_transactions, score_insider_buying
+from edgar_client.fetcher import EdgarClient
+from edgar_client.insider_parser import parse_insider_transactions, score_insider_buying
 
 logger = logging.getLogger(__name__)
 

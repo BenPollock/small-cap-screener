@@ -9,7 +9,7 @@ import pandas as pd
 import pytest
 import responses
 
-from edgar.rate_limiter import RateLimiter
+from edgar_client.rate_limiter import RateLimiter
 
 
 class TestRateLimiter:

@@ -72,9 +72,10 @@ def score_insider_buying(
 
     # Filter to recent transactions
     if "transaction_date" in purchases.columns:
+        cutoff_ts = pd.Timestamp(cutoff_date)
         purchases = purchases[
             purchases["transaction_date"].apply(
-                lambda d: d >= cutoff_date if isinstance(d, date) else False
+                lambda d: pd.Timestamp(d) >= cutoff_ts if d is not None else False
             )
         ].copy()
 

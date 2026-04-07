@@ -5,7 +5,7 @@ from datetime import date, timedelta
 import pandas as pd
 import pytest
 
-from edgar.insider_parser import parse_insider_transactions, score_insider_buying
+from edgar_client.insider_parser import parse_insider_transactions, score_insider_buying
 
 
 class TestParseInsiderTransactions:
